@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+</head>
+<body>
+    
+</body>
+</html><!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Sky Defender — Simple Shooter</title>
+  <style>
+    :root {
+      --bg:#0b1220;
+      --panel:#0f1724;
+      --accent:#61dafb;
+      --danger:#ff5c5c;
+    }
+    html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;}
+    body{display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg,var(--bg),#071020);color:#e6eef6}
+    .wrap{width:900px;max-width:95%;margin:24px auto;padding:14px;border-radius:12px;background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(0,0,0,0.06));box-shadow:0 6px 30px rgba(2,6,23,0.6)}
+    header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+    h1{font-size:18px;margin:0}
+    .controls{font-size:13px;opacity:0.9}
+    canvas{display:block;border-radius:8px;background:linear-gradient(#071427,#0a1a2b);width:100%;height:600px}
+    .hud{display:flex;gap:10px;margin-top:8px;align-items:center}
+    .badge{background:var(--panel);padding:8px 10px;border-radius:8px;font-weight:600}
+    .btn{background:transparent;border:1px solid rgba(255,255,255,0.06);padding:8px 10px;border-radius:8px;color:inherit;cursor:pointer}
+    .footer{font-size:12px;margin-top:8px;opacity:0.85}
+    @media (max-width:600px){ canvas{height:420px} }
+  </style>
+</head>
+<body>
+  <div class="wrap" role="main">
+    <header>
+      <h1>Sky Defender — Simple Shooter</h1>
+      <div class="controls">Move: ← →  •  Shoot: Space  •  Pause: P</div>
+    </header>
+
+    <canvas id="game"></canvas>
+
+    <div class="hud">
+      <div class="badge">Score: <span id="score">0</span></div>
+      <div class="badge">Lives: <span id="lives">3</span></div>
+      <button id="restart" class="btn">Restart</button>
+      <button id="mute" class="btn">Mute</button>
+    </div>
+
+    <div class="footer">
+      Simple HTML5 canvas shooter. Shoot enemies before they hit the bottom. Built with plain JavaScript — no libs.
+    </div>
+  </div>
+
+  <script>
+  (function () {
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d', { alpha: false });
+    const scoreEl = document.getElementById('score');
+    const livesEl = document.getElementById('lives');
+    const restartBtn = document.getElementById('restart');
+    const muteBtn = document.getElementById('mute');
+    let W, H, lastTime = 0, accum = 0;
+    let keys = {};
+    let soundOn = true;
+
+    // Game state
+    let player, bullets, enemies, particles, score, lives, running, paused, spawnTimer, levelSpeed;
+
+    function resize() {
+      // keep crisp pixel ratio
+      const ratio = window.devicePixelRatio || 1;
+      W = canvas.clientWidth;
+      H = canvas.clientHeight;
+      canvas.width = Math.floor(W * ratio);
+      canvas.height = Math.floor(H * ratio);
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    }
+    window.addEventListener('resize', resize);
+
+    // Entities
+    function reset() {
+      player = { x: 0, y: 0, w: 60, h: 14, speed: 420, cooldown: 0 };
+      bullets = [];
+      enemies = [];
+      particles = [];
+      score = 0;
+      lives = 3;
+      running = true;
+      paused = false;
+      spawnTimer = 0;
+      levelSpeed = 1;
+      updateHUD();
+      placePlayer();
+    }
+
+    function placePlayer() {
+      player.x = (W - player.w) / 2;
+      player.y = H - player.h - 12;
+    }
+
+    function spawnEnemy() {
+      const ew = 36 + Math.random() * 30;
+      const ex = Math.random() * (W - ew);
+      const speed = 30 + Math.random() * 80 + levelSpeed * 8;
+      enemies.push({ x: ex, y: -40, w: ew, h: 20, speed, hp: 1 + Math.floor(Math.random()*2) });
+    }
+
+    function shoot() {
+      if (player.cooldown > 0) return;
+      bullets.push({ x: player.x + player.w/2 - 4, y: player.y - 8, w: 8, h: 12, speed: 640 });
+      player.cooldown = 10; // frames
+      playSound('shoot');
+    }
+
+    function playSound(kind) {
+      if (!soundOn) return;
+      // tiny beep using WebAudio API - quick inline implementation
+      try {
+        const ctxAudio = new (window.AudioContext || window.webkitAudioContext)();
+        const o = ctxAudio.createOscillator();
+        const g = ctxAudio.createGain();
+        o.connect(g); g.connect(ctxAudio.destination);
+        if (kind === 'shoot') { o.frequency.value = 900; g.gain.value = 0.06; }
+        else if (kind === 'hit') { o.frequency.value = 320; g.gain.value = 0.08; }
+        else { o.frequency.value = 540; g.gain.value = 0.05; }
+        o.type = 'sine';
+        o.start();
+        g.gain.exponentialRampToValueAtTime(0.0001, ctxAudio.currentTime + 0.12);
+        o.stop(ctxAudio.currentTime + 0.13);
+      } catch(e){ /* audio blocked or unsupported */ }
+    }
+
+    function update(dt) {
+      if (paused || !running) return;
+
+      // Player movement
+      const dir = (keys['ArrowRight'] || keys['d']) - (keys['ArrowLeft'] || keys['a']);
+      if (dir) {
+        player.x += dir * player.speed * dt;
+        if (player.x < 6) player.x = 6;
+        if (player.x + player.w > W-6) player.x = W - player.w - 6;
+      }
+
+      // shooting
+      if (keys[' '] || keys['Spacebar'] || keys['Space']) shoot();
+      if (player.cooldown > 0) player.cooldown -= 60 * dt;
+
+      // bullets
+      for (let i = bullets.length - 1; i >= 0; i--) {
+        const b = bullets[i];
+        b.y -= b.speed * dt;
+        if (b.y + b.h < -10) bullets.splice(i, 1);
+      }
+
+      // enemies
+      spawnTimer -= dt;
+      if (spawnTimer <= 0) {
+        spawnEnemy();
+        spawnTimer = 0.6 - Math.min(0.45, levelSpeed * 0.03);
+      }
+      for (let i = enemies.length - 1; i >= 0; i--) {
+        const e = enemies[i];
+        e.y += e.speed * dt;
+        // collide with bullets
+        for (let j = bullets.length - 1; j >= 0; j--) {
+          const b = bullets[j];
+          if (b.x < e.x + e.w && b.x + b.w > e.x && b.y < e.y + e.h && b.y + b.h > e.y) {
+            bullets.splice(j, 1);
+            e.hp -= 1;
+            createParticles(b.x + b.w/2, b.y + b.h/2, 6);
+            playSound('hit');
+            if (e.hp <= 0) {
+              enemies.splice(i, 1);
+              score += 10;
+              levelSpeed += 0.02;
+              updateHUD();
+            }
+            break;
+          }
+        }
+        // reached bottom
+        if (e && e.y > H - 20) {
+          enemies.splice(i, 1);
+          lives -= 1;
+          playSound('hit');
+          updateHUD();
+          if (lives <= 0) {
+            running = false;
+          }
+        }
+      }
+
+      // particles
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.life -= dt;
+        if (p.life <= 0) particles.splice(i,1);
+      }
+
+      // increase difficulty slightly over time
+      accum += dt;
+      if (accum > 10) { accum = 0; levelSpeed += 0.04; }
+
+      // clamp values
+      if (score < 0) score = 0;
+    }
+
+    function createParticles(x,y,count) {
+      for (let i=0;i<count;i++){
+        particles.push({
+          x,y,
+          vx:(Math.random()-0.5)*220,
+          vy:(Math.random()-0.5)*220,
+          life:0.6 + Math.random()*0.6,
+          r:2 + Math.random()*3
+        });
+      }
+    }
+
+    function updateHUD(){
+      scoreEl.textContent = score;
+      livesEl.textContent = lives;
+    }
+
+    function draw() {
+      // background
+      ctx.clearRect(0,0,W,H);
+      // subtle starfield
+      drawStars();
+
+      // draw player
+      drawRoundedRect(player.x, player.y, player.w, player.h, 6, '#61dafb');
+      ctx.fillStyle = '#0b1624';
+      ctx.fillRect(player.x + 6, player.y + 3, player.w - 12, player.h - 6);
+
+      // bullets
+      for (const b of bullets) {
+        drawRoundedRect(b.x, b.y, b.w, b.h, 3, '#fff');
+      }
+
+      // enemies
+      for (const e of enemies) {
+        drawRoundedRect(e.x, e.y, e.w, e.h, 6, '#ff7a7a');
+        // hp bar
+        ctx.fillStyle = '#000';
+        ctx.fillRect(e.x, e.y - 6, e.w, 3);
+        ctx.fillStyle = '#14ff7f';
+        const hpw = Math.max(0, (e.hp/2) * e.w);
+        ctx.fillRect(e.x, e.y - 6, hpw, 3);
+      }
+
+      // particles
+      for (const p of particles) {
+        ctx.globalAlpha = Math.max(0, p.life/1.2);
+        ctx.fillStyle = '#ffd9b3';
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+
+      // HUD text overlay on canvas (optional)
+      ctx.fillStyle = 'rgba(255,255,255,0.06)';
+      ctx.fillRect(8,8,160,38);
+      ctx.fillStyle = '#eaffff';
+      ctx.font = '13px system-ui, Arial';
+      ctx.fillText('Score: ' + score, 18, 28);
+      ctx.fillText('Lives: ' + lives, 100, 28);
+
+      if (!running) {
+        ctx.fillStyle = 'rgba(3,6,10,0.8)';
+        ctx.fillRect(W/2 - 180, H/2 - 60, 360, 120);
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'center';
+        ctx.font = '24px system-ui, Arial';
+        ctx.fillText('GAME OVER', W/2, H/2 - 10);
+        ctx.font = '14px system-ui, Arial';
+        ctx.fillText('Press Restart to play again', W/2, H/2 + 20);
+        ctx.textAlign = 'start';
+      }
+    }
+
+    function drawRoundedRect(x,y,w,h,r,color){
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(x+r,y);
+      ctx.arcTo(x+w,y,x+w,y+h,r);
+      ctx.arcTo(x+w,y+h,x,y+h,r);
+      ctx.arcTo(x,y+h,x,y,r);
+      ctx.arcTo(x,y,x+w,y,r);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // tiny starfield generation
+    let stars = [];
+    function generateStars() {
+      stars = [];
+      const count = Math.floor((W*H) / 10000);
+      for (let i=0;i<count;i++){
+        stars.push({x:Math.random()*W, y:Math.random()*H, s: Math.random()*1.6+0.3});
+      }
+    }
+    function drawStars(){
+      ctx.fillStyle = '#071425';
+      ctx.fillRect(0,0,W,H);
+      for (const s of stars){
+        ctx.beginPath();
+        ctx.fillStyle = 'rgba(255,255,255,' + (0.06 + s.s*0.05) + ')';
+        ctx.fillRect(s.x, s.y, s.s, s.s);
+      }
+    }
+
+    // main loop
+    function loop(ts){
+      if (!lastTime) lastTime = ts;
+      const dt = Math.min(1/30, (ts - lastTime) / 1000);
+      lastTime = ts;
+      update(dt);
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    // input handlers
+    window.addEventListener('keydown', (e) => {
+      if (['ArrowLeft','ArrowRight',' ','Spacebar','Space','a','d','p','P'].includes(e.key)) {
+        e.preventDefault();
+      }
+      keys[e.key] = 1;
+      if ((e.key === 'p' || e.key === 'P')) {
+        paused = !paused;
+      }
+    });
+    window.addEventListener('keyup', (e) => { keys[e.key] = 0; });
+
+    // mouse/touch: move player horizontally
+    canvas.addEventListener('mousemove', (ev) => {
+      const rect = canvas.getBoundingClientRect();
+      const clientX = ev.clientX - rect.left;
+      player.x = Math.max(6, Math.min(W - player.w - 6, clientX - player.w/2));
+    });
+
+    canvas.addEventListener('touchmove', (ev) => {
+      ev.preventDefault();
+      const t = ev.touches[0];
+      const rect = canvas.getBoundingClientRect();
+      const clientX = t.clientX - rect.left;
+      player.x = Math.max(6, Math.min(W - player.w - 6, clientX - player.w/2));
+    }, {passive:false});
+
+    // UI buttons
+    restartBtn.addEventListener('click', () => {
+      reset();
+      lastTime = 0;
+    });
+    muteBtn.addEventListener('click', () => {
+      soundOn = !soundOn;
+      muteBtn.textContent = soundOn ? 'Mute' : 'Unmute';
+    });
+
+    // init
+    function init() {
+      resize();
+      generateStars();
+      reset();
+      requestAnimationFrame(loop);
+    }
+
+    // ensure canvas sized after fonts loaded or on first paint
+    window.addEventListener('load', () => {
+      // set canvas css height to a stable value
+      canvas.style.height = '600px';
+      init();
+    });
+  })();
+  </script>
+</body>
+</html>
